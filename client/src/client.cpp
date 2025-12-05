@@ -27,21 +27,12 @@ Client::Client(QWidget* parent) : QWidget(parent),
 void Client::cleanup() {
     qDebug() << "Cleanup called";
 
-    disconnect();
-
     if (m_socket) {
         m_socket->blockSignals(true);
-
         m_socket->abort();
-
-        delete m_socket;
+        m_socket->deleteLater();
         m_socket = nullptr;
     }
-
-    if (m_connectButton) m_connectButton->disconnect();
-    if (m_sendButton) m_sendButton->disconnect();
-    if (m_changeInterlocutorButton) m_changeInterlocutorButton->disconnect();
-    if (m_messageInput) m_messageInput->disconnect();
 
     qDebug() << "Cleanup completed";
 }
@@ -283,10 +274,8 @@ void Client::processServerMessage(const QByteArray& data) {
         QString text = message["text"].toString();
         QString timestamp = message["timestamp"].toString();
 
-        QString formattedMessage = QString("[%1] <b>%2:</b> %3")
-                                       .arg(timestamp)
-                                       .arg(sender)
-                                       .arg(text);
+        QString formattedMessage = QString("[%1] <b>%2:</b> %3").arg(timestamp, sender, text);
+
         m_chatDisplay->append(formattedMessage);
 
         QScrollBar* scrollbar = m_chatDisplay->verticalScrollBar();
@@ -394,9 +383,8 @@ void Client::sendMessage() {
     messageObj["text"] = text;
 
     QString timestamp = QDateTime::currentDateTime().toString("hh:mm:ss");
-    QString formattedMessage = QString("[%1] <b>You:</b> %2")
-                                   .arg(timestamp)
-                                   .arg(text);
+    QString formattedMessage = QString("[%1] <b>You:</b> %2").arg(timestamp, text);
+
     m_chatDisplay->append(formattedMessage);
 
     qDebug() << "Sending message:" << messageObj;

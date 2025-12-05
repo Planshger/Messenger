@@ -4,7 +4,7 @@
 #include <QJsonObject>
 #include <QDateTime>
 
-Server::Server(QObject* parent) : QTcpServer(parent) { connect(this, &QTcpServer::newConnection, this, &Server::onNewConnection);}
+Server::Server(QObject* parent) : QTcpServer(parent) {connect(this, &QTcpServer::newConnection, this, &Server::onNewConnection);}
 
 bool Server::open(const QString& port) {
     if (!listen(QHostAddress::Any, port.toInt())) {
@@ -39,9 +39,8 @@ void Server::onClientDisconnected() {
     if (!clientSocket) return;
 
     QString clientName = m_socketToName.value(clientSocket);
-    if (!clientName.isEmpty()) {
-        removeClient(clientName);
-    }
+
+    if (!clientName.isEmpty()) {removeClient(clientName);}
 
     m_buffers.remove(clientSocket);
     clientSocket->deleteLater();
@@ -57,16 +56,12 @@ void Server::onReadyRead() {
 
     while (true) {
         if (buffer.expectedSize == 0) {
-            if (clientSocket->bytesAvailable() < static_cast<qint64>(sizeof(quint32))) {
-                break; // Not enough data for message size
-            }
+            if (clientSocket->bytesAvailable() < static_cast<qint64>(sizeof(quint32))) {break;}
             in >> buffer.expectedSize;
             qDebug() << "Expecting message of size:" << buffer.expectedSize << "from socket";
         }
 
-        if (clientSocket->bytesAvailable() < buffer.expectedSize) {
-            break;
-        }
+        if (clientSocket->bytesAvailable() < buffer.expectedSize) {break;}
 
         QByteArray data;
         data.resize(buffer.expectedSize);
