@@ -1,5 +1,6 @@
 #include <QWidget>
 #include <QTcpSocket>
+#include <QJsonObject>
 
 class QLineEdit;
 class QTextEdit;
@@ -11,7 +12,7 @@ class Client : public QWidget {
     Q_OBJECT
 
 public:
-    Client(QWidget* parent = nullptr);
+    explicit Client(QWidget* parent = nullptr);
 
 private slots:
     void connectToServer();
@@ -20,29 +21,33 @@ private slots:
     void onDisconnected();
     void onReadyRead();
     void sendMessage();
-    void updateConnectionStatus(bool connected);
+    void changeInterlocutor();
 
 private:
     void setupUI();
     void sendAuthRequest();
-    void processServerMessage(const QJsonObject& message);
+    void sendMessageWithSize(const QJsonObject& jsonObj);
+    void processServerMessage(const QByteArray& data);
+    void updateConnectionStatus(bool connected);
+    void cleanup();
 
     QTcpSocket* m_socket;
-    bool m_isAuthenticated;
     QString m_clientName;
-    QString m_partnerName;
+    QString m_interlocutorName;
+    bool m_isAuthenticated;
+    bool m_interlocutorConnected;
+    quint32 m_messageSize;
 
     QGroupBox* m_authGroup;
+    QGroupBox* m_chatGroup;
     QLineEdit* m_serverAddressEdit;
     QLineEdit* m_clientNameEdit;
-    QLineEdit* m_partnerNameEdit;
-    QPushButton* m_connectButton;
-
-    QGroupBox* m_chatGroup;
+    QLineEdit* m_interlocutorNameEdit;
+    QLineEdit* m_changeInterlocutorEdit;
     QTextEdit* m_chatDisplay;
     QLineEdit* m_messageInput;
+    QPushButton* m_connectButton;
     QPushButton* m_sendButton;
-
+    QPushButton* m_changeInterlocutorButton;
     QLabel* m_statusLabel;
 };
-

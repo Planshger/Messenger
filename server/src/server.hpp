@@ -1,34 +1,45 @@
 #include <QTcpServer>
-#include <QMap>
 #include <QTcpSocket>
+#include <QMap>
+#include <QString>
+#include <QJsonObject>
+
+struct ClientInfo {
+    QTcpSocket* socket;
+    QString interlocutor;
+    bool isAuthenticated;
+};
+
+struct ClientBuffer {
+    QTcpSocket* socket;
+    quint32 expectedSize;
+};
 
 class Server : public QTcpServer {
     Q_OBJECT
 
 public:
-    Server(QObject* parent = nullptr);
+    explicit Server(QObject* parent = nullptr);
     bool open(const QString& port);
 
-public slots:
+private slots:
     void onNewConnection();
     void onClientDisconnected();
     void onReadyRead();
 
 private:
-    struct ClientInfo {
-        QTcpSocket* socket;
-        QString partner;
-        bool isAuthenticated;
-    };
+    void processClientMessage(QTcpSocket* clientSocket, const QByteArray& data);
+    void processAuth(QTcpSocket* clientSocket, const QJsonObject& obj);
+    void processMessage(QTcpSocket* clientSocket, const QJsonObject& obj);
+    void processChangeInterlocutor(QTcpSocket* clientSocket, const QJsonObject& obj);
+    void sendMessageWithSize(QTcpSocket* socket, const QJsonObject& jsonObj);
+    bool validateConnection(const QString& clientName, const QString& interlocutorName, QString& error);
+    bool validateInterlocutorChange(const QString& clientName, const QString& newInterlocutor, QString& error);
+    void sendToClient(const QString& receiverName, const QString& message);
+    void removeClient(const QString& clientName);
+    void notifyInterlocutorDisconnected(const QString& clientName);
 
     QMap<QString, ClientInfo> m_clients;
     QMap<QTcpSocket*, QString> m_socketToName;
-
-    void sendToClient(const QString& receiverName, const QString& message);
-    void removeClient(const QString& clientName);
-    bool validateConnection(const QString& clientName, const QString& partnerName, QString& error);
-    void notifyPartnerDisconnected(const QString& clientName);
-    void processAuth(QTcpSocket* clientSocket, const QJsonObject& obj);
-    void processMessage(QTcpSocket* clientSocket, const QJsonObject& obj);
+    QMap<QTcpSocket*, ClientBuffer> m_buffers;
 };
-

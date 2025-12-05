@@ -9,14 +9,43 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QScrollBar>
+#include <QDataStream>
+#include <QJsonParseError>
+#include <QCloseEvent>
+#include <QDateTime>
 
 Client::Client(QWidget* parent) : QWidget(parent),
     m_socket(nullptr),
-    m_isAuthenticated(false) {
-
+    m_isAuthenticated(false),
+    m_interlocutorConnected(false),
+    m_messageSize(0) {
     setupUI();
     updateConnectionStatus(false);
+    connect(qApp, &QCoreApplication::aboutToQuit, this, &Client::cleanup);
 }
+
+void Client::cleanup() {
+    qDebug() << "Cleanup called";
+
+    disconnect();
+
+    if (m_socket) {
+        m_socket->blockSignals(true);
+
+        m_socket->abort();
+
+        delete m_socket;
+        m_socket = nullptr;
+    }
+
+    if (m_connectButton) m_connectButton->disconnect();
+    if (m_sendButton) m_sendButton->disconnect();
+    if (m_changeInterlocutorButton) m_changeInterlocutorButton->disconnect();
+    if (m_messageInput) m_messageInput->disconnect();
+
+    qDebug() << "Cleanup completed";
+}
+
 
 void Client::setupUI() {
     m_authGroup = new QGroupBox("Connecting to the server", this);
@@ -27,8 +56,8 @@ void Client::setupUI() {
     QLabel* clientLabel = new QLabel("Your name:", m_authGroup);
     m_clientNameEdit = new QLineEdit(m_authGroup);
 
-    QLabel* partnerLabel = new QLabel("Interlocutor:", m_authGroup);
-    m_partnerNameEdit = new QLineEdit(m_authGroup);
+    QLabel* interlocutorLabel = new QLabel("Interlocutor:", m_authGroup);
+    m_interlocutorNameEdit = new QLineEdit(m_authGroup);
 
     m_connectButton = new QPushButton("Connect", m_authGroup);
     connect(m_connectButton, &QPushButton::clicked, this, &Client::connectToServer);
@@ -38,8 +67,8 @@ void Client::setupUI() {
     authLayout->addWidget(m_serverAddressEdit);
     authLayout->addWidget(clientLabel);
     authLayout->addWidget(m_clientNameEdit);
-    authLayout->addWidget(partnerLabel);
-    authLayout->addWidget(m_partnerNameEdit);
+    authLayout->addWidget(interlocutorLabel);
+    authLayout->addWidget(m_interlocutorNameEdit);
     authLayout->addWidget(m_connectButton);
 
     m_chatGroup = new QGroupBox("Chat", this);
@@ -56,12 +85,25 @@ void Client::setupUI() {
     m_sendButton->setEnabled(false);
     connect(m_sendButton, &QPushButton::clicked, this, &Client::sendMessage);
 
+    QLabel* changeInterlocutorLabel = new QLabel("Change Interlocutor:", m_chatGroup);
+    m_changeInterlocutorEdit = new QLineEdit(m_chatGroup);
+    m_changeInterlocutorEdit->setEnabled(false);
+    m_changeInterlocutorButton = new QPushButton("Change", m_chatGroup);
+    m_changeInterlocutorButton->setEnabled(false);
+    connect(m_changeInterlocutorButton, &QPushButton::clicked, this, &Client::changeInterlocutor);
+
+    QHBoxLayout* changeLayout = new QHBoxLayout();
+    changeLayout->addWidget(changeInterlocutorLabel);
+    changeLayout->addWidget(m_changeInterlocutorEdit);
+    changeLayout->addWidget(m_changeInterlocutorButton);
+
     QHBoxLayout* inputLayout = new QHBoxLayout();
     inputLayout->addWidget(m_messageInput);
     inputLayout->addWidget(m_sendButton);
 
     QVBoxLayout* chatLayout = new QVBoxLayout(m_chatGroup);
     chatLayout->addWidget(m_chatDisplay);
+    chatLayout->addLayout(changeLayout);
     chatLayout->addLayout(inputLayout);
 
     m_statusLabel = new QLabel("Not connected", this);
@@ -72,20 +114,20 @@ void Client::setupUI() {
     mainLayout->addWidget(m_statusLabel);
 
     setWindowTitle("Chat Client");
-    resize(500, 600);
+    resize(600, 700);
 }
 
 void Client::connectToServer() {
     m_clientName = m_clientNameEdit->text().trimmed();
-    m_partnerName = m_partnerNameEdit->text().trimmed();
+    m_interlocutorName = m_interlocutorNameEdit->text().trimmed();
     QString serverAddress = m_serverAddressEdit->text().trimmed();
 
-    if (m_clientName.isEmpty() || m_partnerName.isEmpty() || serverAddress.isEmpty()) {
+    if (m_clientName.isEmpty() || m_interlocutorName.isEmpty() || serverAddress.isEmpty()) {
         QMessageBox::warning(this, "Error", "Fill in all fields");
         return;
     }
 
-    if (m_clientName == m_partnerName) {
+    if (m_clientName == m_interlocutorName) {
         QMessageBox::warning(this, "Error", "Your name and interlocutor name cannot be the same");
         return;
     }
@@ -95,6 +137,8 @@ void Client::connectToServer() {
     }
 
     m_socket = new QTcpSocket(this);
+    m_messageSize = 0;
+    m_interlocutorConnected = false;
 
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError error) {
         qDebug() << "Socket error:" << error << m_socket->errorString();
@@ -129,9 +173,12 @@ void Client::onDisconnected() {
     qDebug() << "Disconnected from server";
     updateConnectionStatus(false);
     m_isAuthenticated = false;
+    m_interlocutorConnected = false;
     m_chatGroup->setEnabled(false);
     m_messageInput->setEnabled(false);
     m_sendButton->setEnabled(false);
+    m_changeInterlocutorEdit->setEnabled(false);
+    m_changeInterlocutorButton->setEnabled(false);
 
     if (m_connectButton) {
         m_connectButton->setEnabled(true);
@@ -144,62 +191,83 @@ void Client::onDisconnected() {
 void Client::onReadyRead() {
     if (!m_socket) return;
 
-    while (m_socket->canReadLine()) {
-        QByteArray data = m_socket->readLine().trimmed();
-        qDebug() << "Client received:" << data;
+    QDataStream in(m_socket);
+    in.setVersion(QDataStream::Qt_5_15);
 
-        QJsonParseError parseError;
-        QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
-
-        if (parseError.error != QJsonParseError::NoError) {
-            qDebug() << "JSON parse error:" << parseError.errorString();
-            qDebug() << "Invalid JSON data:" << data;
-            continue;
+    while (true) {
+        if (m_messageSize == 0) {
+            if (m_socket->bytesAvailable() < static_cast<qint64>(sizeof(quint32))) {
+                break;
+            }
+            in >> m_messageSize;
+            qDebug() << "Expecting message of size:" << m_messageSize;
         }
 
-        if (!doc.isObject()) {
-            qDebug() << "Server response is not a JSON object";
-            continue;
+        if (m_socket->bytesAvailable() < m_messageSize) {
+            break;
         }
 
-        processServerMessage(doc.object());
+        QByteArray data;
+        data.resize(m_messageSize);
+        int bytesRead = in.readRawData(data.data(), m_messageSize);
+
+        if (bytesRead != m_messageSize) {
+            qDebug() << "Error: Read" << bytesRead << "bytes, expected" << m_messageSize;
+            m_messageSize = 0;
+            break;
+        }
+
+        qDebug() << "Client received full message, size:" << m_messageSize;
+        processServerMessage(data);
+        m_messageSize = 0;
     }
 }
 
-void Client::sendAuthRequest() {
-    QJsonObject authObj;
-    authObj["type"] = "auth";
-    authObj["clientName"] = m_clientName;
-    authObj["partnerName"] = m_partnerName;
+void Client::processServerMessage(const QByteArray& data) {
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
 
-    QByteArray jsonData = QJsonDocument(authObj).toJson(QJsonDocument::Compact) + "\n";
-    qDebug() << "Sending auth request:" << jsonData;
-
-    if (m_socket->write(jsonData) == -1) {
-        qDebug() << "Failed to send auth request:" << m_socket->errorString();
-    } else {
-        qDebug() << "Auth request sent successfully";
+    if (parseError.error != QJsonParseError::NoError) {
+        qDebug() << "JSON parse error:" << parseError.errorString();
+        qDebug() << "Invalid JSON data:" << QString::fromUtf8(data).left(100);
+        return;
     }
-}
 
-void Client::processServerMessage(const QJsonObject& message) {
+    if (!doc.isObject()) {
+        qDebug() << "Server response is not a JSON object";
+        return;
+    }
+
+    QJsonObject message = doc.object();
     QString type = message["type"].toString();
     qDebug() << "Processing message type:" << type;
 
     if (type == "auth_success") {
         m_isAuthenticated = true;
         m_chatGroup->setEnabled(true);
-        m_messageInput->setEnabled(true);
-        m_sendButton->setEnabled(true);
-        m_chatGroup->setTitle(QString("Chat with %1").arg(m_partnerName));
+        m_changeInterlocutorEdit->setEnabled(true);
+        m_changeInterlocutorButton->setEnabled(true);
+
+        QString interlocutorName = message["interlocutorName"].toString();
+        if (!interlocutorName.isEmpty() && m_interlocutorName != interlocutorName) {
+            m_interlocutorName = interlocutorName;
+            m_interlocutorNameEdit->setText(interlocutorName);
+        }
+
+        m_chatGroup->setTitle(QString("Chat with %1").arg(m_interlocutorName));
 
         QString msg = message["message"].toString();
         m_chatDisplay->append(QString("<font color='green'>%1</font>").arg(msg));
 
-        // Проверяем, указан ли партнер
-        QString partnerName = message["partnerName"].toString();
-        if (!partnerName.isEmpty()) {
-            m_chatDisplay->append(QString("<font color='blue'>Waiting for %1 to connect...</font>").arg(partnerName));
+        m_interlocutorConnected = message["interlocutorConnected"].toBool();
+        if (m_interlocutorConnected) {
+            m_chatDisplay->append(QString("<font color='green'>%1 is connected! You can now chat.</font>").arg(m_interlocutorName));
+            m_messageInput->setEnabled(true);
+            m_sendButton->setEnabled(true);
+        } else {
+            m_chatDisplay->append(QString("<font color='blue'>Waiting for %1 to connect...</font>").arg(m_interlocutorName));
+            m_messageInput->setEnabled(false);
+            m_sendButton->setEnabled(false);
         }
 
         m_messageInput->setFocus();
@@ -224,29 +292,97 @@ void Client::processServerMessage(const QJsonObject& message) {
         QScrollBar* scrollbar = m_chatDisplay->verticalScrollBar();
         scrollbar->setValue(scrollbar->maximum());
     }
-    else if (type == "partner_connected") {
-        QString partnerName = message["partnerName"].toString();
-        m_chatDisplay->append(QString("<font color='green'>%1 has connected! You can now chat.</font>").arg(partnerName));
+    else if (type == "interlocutor_connected") {
+        QString interlocutorName = message["interlocutorName"].toString();
+        m_interlocutorName = interlocutorName;
+        m_interlocutorConnected = true;
+        m_interlocutorNameEdit->setText(interlocutorName);
+        m_chatGroup->setTitle(QString("Chat with %1").arg(interlocutorName));
+        m_chatDisplay->append(QString("<font color='green'>%1 has connected! You can now chat.</font>").arg(interlocutorName));
         m_messageInput->setEnabled(true);
         m_sendButton->setEnabled(true);
     }
-    else if (type == "partner_disconnected") {
+    else if (type == "interlocutor_disconnected") {
         QString msg = message["message"].toString();
+        m_interlocutorConnected = false;
         m_chatDisplay->append(QString("<font color='red'>%1</font>").arg(msg));
         m_messageInput->setEnabled(false);
         m_sendButton->setEnabled(false);
-        m_chatDisplay->append("<font color='blue'>Waiting for partner to reconnect...</font>");
+        m_chatDisplay->append("<font color='blue'>Waiting for interlocutor to reconnect...</font>");
     }
-    else if (type == "partner_offline") {
+    else if (type == "interlocutor_offline") {
         QString msg = message["message"].toString();
         m_chatDisplay->append(QString("<font color='orange'>%1</font>").arg(msg));
-        m_chatDisplay->append("<font color='blue'>Your message was not delivered. Partner is offline.</font>");
+        m_chatDisplay->append("<font color='blue'>Your message was not delivered. Interlocutor is offline.</font>");
     }
+    else if (type == "interlocutor_changed") {
+        QString newInterlocutor = message["newInterlocutor"].toString();
+        m_interlocutorName = newInterlocutor;
+        m_interlocutorNameEdit->setText(newInterlocutor);
+        m_changeInterlocutorEdit->clear();
+        m_chatGroup->setTitle(QString("Chat with %1").arg(newInterlocutor));
+        m_chatDisplay->append(QString("<font color='green'>Interlocutor changed to %1</font>").arg(newInterlocutor));
+
+        m_interlocutorConnected = message["interlocutorConnected"].toBool();
+        if (m_interlocutorConnected) {
+            m_chatDisplay->append(QString("<font color='green'>%1 is connected! You can now chat.</font>").arg(newInterlocutor));
+            m_messageInput->setEnabled(true);
+            m_sendButton->setEnabled(true);
+        } else {
+            m_chatDisplay->append(QString("<font color='blue'>Waiting for %1 to connect...</font>").arg(newInterlocutor));
+            m_messageInput->setEnabled(false);
+            m_sendButton->setEnabled(false);
+        }
+    }
+    else if (type == "interlocutor_change_error") {
+        QString error = message["message"].toString();
+        QMessageBox::warning(this, "Change Interlocutor Error", error);
+        m_chatDisplay->append(QString("<font color='red'>Error: %1</font>").arg(error));
+    }
+}
+
+void Client::sendMessageWithSize(const QJsonObject& jsonObj) {
+    if (!m_socket || m_socket->state() != QAbstractSocket::ConnectedState) {
+        return;
+    }
+
+    QByteArray jsonData = QJsonDocument(jsonObj).toJson(QJsonDocument::Compact);
+    quint32 messageSize = static_cast<quint32>(jsonData.size());
+
+    QByteArray block;
+    QDataStream out(&block, QIODevice::WriteOnly);
+    out.setVersion(QDataStream::Qt_5_15);
+    out << messageSize;
+    out.writeRawData(jsonData.constData(), jsonData.size());
+
+    qDebug() << "Sending message, size:" << messageSize << "content:" << jsonData;
+
+    qint64 bytesWritten = m_socket->write(block);
+    if (bytesWritten == -1) {
+        qDebug() << "Failed to send message:" << m_socket->errorString();
+    } else if (bytesWritten != block.size()) {
+        qDebug() << "Warning: Only" << bytesWritten << "of" << block.size() << "bytes written";
+    }
+}
+
+void Client::sendAuthRequest() {
+    QJsonObject authObj;
+    authObj["type"] = "auth";
+    authObj["clientName"] = m_clientName;
+    authObj["interlocutorName"] = m_interlocutorName;
+
+    qDebug() << "Sending auth request:" << authObj;
+    sendMessageWithSize(authObj);
 }
 
 void Client::sendMessage() {
     if (!m_socket || !m_isAuthenticated) {
         qDebug() << "Cannot send message: socket not ready or not authenticated";
+        return;
+    }
+
+    if (!m_interlocutorConnected) {
+        m_chatDisplay->append("<font color='orange'>Cannot send message: interlocutor is not connected</font>");
         return;
     }
 
@@ -263,18 +399,36 @@ void Client::sendMessage() {
                                    .arg(text);
     m_chatDisplay->append(formattedMessage);
 
-    QByteArray jsonData = QJsonDocument(messageObj).toJson(QJsonDocument::Compact) + "\n";
-    qDebug() << "Sending message:" << jsonData;
-
-    if (m_socket->write(jsonData) == -1) {
-        qDebug() << "Failed to send message:" << m_socket->errorString();
-        m_chatDisplay->append("<font color='red'>Failed to send message. Check connection.</font>");
-    }
-
+    qDebug() << "Sending message:" << messageObj;
+    sendMessageWithSize(messageObj);
     m_messageInput->clear();
 
     QScrollBar* scrollbar = m_chatDisplay->verticalScrollBar();
     scrollbar->setValue(scrollbar->maximum());
+}
+
+void Client::changeInterlocutor() {
+    if (!m_socket || !m_isAuthenticated) {
+        return;
+    }
+
+    QString newInterlocutor = m_changeInterlocutorEdit->text().trimmed();
+    if (newInterlocutor.isEmpty()) {
+        QMessageBox::warning(this, "Error", "Enter interlocutor name");
+        return;
+    }
+
+    if (newInterlocutor == m_clientName) {
+        QMessageBox::warning(this, "Error", "Cannot set yourself as interlocutor");
+        return;
+    }
+
+    QJsonObject changeObj;
+    changeObj["type"] = "change_interlocutor";
+    changeObj["newInterlocutor"] = newInterlocutor;
+
+    qDebug() << "Sending change interlocutor request:" << changeObj;
+    sendMessageWithSize(changeObj);
 }
 
 void Client::updateConnectionStatus(bool connected) {
