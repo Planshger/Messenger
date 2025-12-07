@@ -8,7 +8,6 @@
 #include <QJsonObject>
 #include <QDataStream>
 #include <QTimer>
-#include <memory>
 
 class ServerTest : public QObject {
     Q_OBJECT

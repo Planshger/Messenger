@@ -1,5 +1,5 @@
 #include "server_test.hpp"
-#include "../../server/src/server.hpp"
+#include "server.hpp"
 #include <QCoreApplication>
 #include <QThread>
 #include <QSignalSpy>

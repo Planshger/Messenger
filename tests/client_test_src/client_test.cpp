@@ -1,75 +1,17 @@
 #include "client_test.hpp"
-#include "../../client/src/client.hpp"
-#include <QLineEdit>
-#include <QPushButton>
-#include <QTextEdit>
-#include <QMessageBox>
-#include <QSignalSpy>
+#include "testable_client.hpp"
+#include "ui/client_widget.hpp"
 #include <QTest>
-#include <QCoreApplication>
+#include <QSignalSpy>
+#include <QMessageBox>
 #include <QTimer>
 #include <QDebug>
-#include <QLabel>
-#include <QJsonArray>
-#include <memory>
-#include <QJsonDocument>
-#include <QDataStream>
-#include <QTcpSocket>
-#include <QGroupBox>
-
-class TestableClient : public Client {
-public:
-    using Client::Client;
-    using Client::sendMessageWithSize;
-    using Client::processServerMessage;
-    using Client::sendAuthRequest;
-    using Client::updateConnectionStatus;
-    using Client::cleanup;
-
-    QTcpSocket* socket() const { return m_socket; }
-    QString clientName() const { return m_clientName; }
-    QString interlocutorName() const { return m_interlocutorName; }
-    bool isAuthenticated() const { return m_isAuthenticated; }
-    bool interlocutorConnected() const { return m_interlocutorConnected; }
-    quint32 messageSize() const { return m_messageSize; }
-    QGroupBox* chatGroup() const { return m_chatGroup; }
-
-    void setSocket(QTcpSocket* socket) { m_socket = socket; }
-    void setClientName(const QString& name) { m_clientName = name; }
-    void setInterlocutorName(const QString& name) { m_interlocutorName = name; }
-    void setIsAuthenticated(bool auth) {
-        m_isAuthenticated = auth;
-        if (auth && m_chatGroup) {
-            m_chatGroup->setEnabled(true);
-            m_changeInterlocutorEdit->setEnabled(true);
-            m_changeInterlocutorButton->setEnabled(true);
-        }
-    }
-    void setInterlocutorConnected(bool connected) {
-        m_interlocutorConnected = connected;
-        if (m_messageInput) {
-            m_messageInput->setEnabled(connected);
-        }
-        if (m_sendButton) {
-            m_sendButton->setEnabled(connected);
-        }
-    }
-    void setMessageSize(quint32 size) { m_messageSize = size; }
-
-    QLineEdit* serverAddressEdit() const { return m_serverAddressEdit; }
-    QLineEdit* clientNameEdit() const { return m_clientNameEdit; }
-    QLineEdit* interlocutorNameEdit() const { return m_interlocutorNameEdit; }
-    QLineEdit* messageInput() const { return m_messageInput; }
-    QLineEdit* changeInterlocutorEdit() const { return m_changeInterlocutorEdit; }
-    QTextEdit* chatDisplay() const { return m_chatDisplay; }
-    QPushButton* connectButton() const { return m_connectButton; }
-    QPushButton* sendButton() const { return m_sendButton; }
-    QPushButton* changeInterlocutorButton() const { return m_changeInterlocutorButton; }
-    QLabel* statusLabel() const { return m_statusLabel; }
-};
 
 void ClientTest::init() {
     client = new TestableClient();
+    QVERIFY(client != nullptr);
+    QVERIFY(client->clientWidget() != nullptr);
+    QVERIFY(client->networkClient() != nullptr);
 }
 
 void ClientTest::cleanup() {
@@ -77,398 +19,234 @@ void ClientTest::cleanup() {
     client = nullptr;
 }
 
-std::unique_ptr<QTcpSocket> createMockSocket() {
-    return std::make_unique<QTcpSocket>();
+void ClientTest::testClientInitialization() {
+    QVERIFY(client != nullptr);
+
+    auto widget = client->clientWidget();
+    auto network = client->networkClient();
+
+    QVERIFY(widget != nullptr);
+    QVERIFY(network != nullptr);
+
+    QVERIFY(client->currentClientName().isEmpty());
+    QVERIFY(client->currentInterlocutorName().isEmpty());
+
+    QVERIFY(widget->getServerAddress() == "localhost");
+    QVERIFY(widget->getClientName().isEmpty());
+    QVERIFY(widget->getInterlocutorName().isEmpty());
 }
 
-QByteArray createMessageData(const QJsonObject& obj) {
-    QByteArray jsonData = QJsonDocument(obj).toJson(QJsonDocument::Compact);
-    quint32 messageSize = static_cast<quint32>(jsonData.size());
+void ClientTest::testConnectClickedSignal() {
+    auto widget = client->clientWidget();
 
-    QByteArray block;
-    QDataStream out(&block, QIODevice::WriteOnly);
-    out.setVersion(QDataStream::Qt_5_15);
-    out << messageSize;
-    out.writeRawData(jsonData.constData(), jsonData.size());
+    QSignalSpy connectSpy(widget, &ClientWidget::connectClicked);
 
-    return block;
+    client->setTestClientName("testUser");
+    client->setTestInterlocutorName("testFriend");
+    client->setTestServerAddress("127.0.0.1");
+
+    client->simulateConnectButtonClick();
+
+    QCOMPARE(connectSpy.count(), 1);
+
+    QList<QVariant> arguments = connectSpy.takeFirst();
+    QCOMPARE(arguments.at(0).toString(), QString("127.0.0.1"));
+    QCOMPARE(arguments.at(1).toString(), QString("testUser"));
+    QCOMPARE(arguments.at(2).toString(), QString("testFriend"));
 }
 
-void simulateServerMessage(TestableClient* testClient, const QJsonObject& message) {
-    QByteArray jsonData = QJsonDocument(message).toJson(QJsonDocument::Compact);
-    testClient->processServerMessage(jsonData);
+void ClientTest::testDisconnectClickedSignal() {
+    auto widget = client->clientWidget();
+
+    QSignalSpy connectSpy(widget, &ClientWidget::connectClicked);
+
+    client->setTestClientName("testUser");
+    client->setTestInterlocutorName("testFriend");
+    client->setTestServerAddress("127.0.0.1");
+
+    client->simulateConnectButtonClick();
+    QTest::qWait(100);
+    connectSpy.clear();
+
+    widget->setConnectionStatus(true, "Connected");
+
+    client->simulateConnectButtonClick();
+
+    QCOMPARE(connectSpy.count(), 1);
 }
 
-void ClientTest::testInitialState() {
-    QVERIFY(client->socket() == nullptr);
-    QVERIFY(!client->isAuthenticated());
-    QVERIFY(!client->interlocutorConnected());
-    QCOMPARE(client->messageSize(), quint32(0));
+void ClientTest::testMessageSentSignal() {
+    auto widget = client->clientWidget();
 
-    QVERIFY(client->serverAddressEdit() != nullptr);
-    QVERIFY(client->clientNameEdit() != nullptr);
-    QVERIFY(client->interlocutorNameEdit() != nullptr);
-    QVERIFY(client->messageInput() != nullptr);
-    QVERIFY(client->chatDisplay() != nullptr);
-    QVERIFY(client->connectButton() != nullptr);
-    QVERIFY(client->sendButton() != nullptr);
+    QSignalSpy messageSpy(widget, &ClientWidget::messageSent);
 
-    QVERIFY(client->sendButton()->isEnabled() == false);
-    QVERIFY(client->messageInput()->isEnabled() == false);
-    QVERIFY(client->chatGroup()->isEnabled() == false);
+    client->setTestMessageInput("Hello, World!");
+
+    widget->setConnectionStatus(true, "Connected");
+
+    client->simulateSendButtonClick();
+
+    QCOMPARE(messageSpy.count(), 1);
+
+    QList<QVariant> arguments = messageSpy.takeFirst();
+    QCOMPARE(arguments.at(0).toString(), QString("Hello, World!"));
 }
 
-void ClientTest::testConnectToServerValidation() {
-    client->clientNameEdit()->setText("");
-    client->interlocutorNameEdit()->setText("");
-    client->serverAddressEdit()->setText("");
+void ClientTest::testChangeInterlocutorSignal() {
+    auto widget = client->clientWidget();
 
-    client->connectToServer();
+    QSignalSpy changeSpy(widget, &ClientWidget::changeInterlocutorRequested);
 
-    QVERIFY(client->socket() == nullptr);
+    client->setTestChangeInterlocutorEdit("newFriend");
+
+    widget->setConnectionStatus(true, "Connected");
+
+    client->simulateChangeInterlocutorButtonClick();
+
+    QCOMPARE(changeSpy.count(), 1);
+
+    QList<QVariant> arguments = changeSpy.takeFirst();
+    QCOMPARE(arguments.at(0).toString(), QString("newFriend"));
 }
 
-void ClientTest::testConnectToServerSameNames() {
-    client->clientNameEdit()->setText("same");
-    client->interlocutorNameEdit()->setText("same");
-    client->serverAddressEdit()->setText("localhost");
-    client->connectToServer();
-    QVERIFY(client->socket() == nullptr);
+void ClientTest::testNetworkConnected() {
+    QVERIFY(client->getStatusLabel()->text().contains("Not connected"));
+
+    client->simulateNetworkConnected();
+
+    QTest::qWait(100);
+
+    QVERIFY(client->getStatusLabel()->text().contains("Authenticating"));
 }
 
-void ClientTest::testProcessServerMessageAuthSuccess() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorName("testInterlocutor");
+void ClientTest::testNetworkDisconnected() {
+    client->simulateNetworkConnected();
+    QTest::qWait(100);
 
-    QJsonObject authSuccess;
-    authSuccess["type"] = "auth_success";
-    authSuccess["message"] = "Authentication successful";
-    authSuccess["interlocutorName"] = "testInterlocutor";
-    authSuccess["interlocutorConnected"] = true;
+    client->simulateNetworkDisconnected();
+    QTest::qWait(100);
 
-    simulateServerMessage(client, authSuccess);
-
-    QVERIFY(client->isAuthenticated());
-    QVERIFY(client->interlocutorConnected());
-    QCOMPARE(client->interlocutorName(), QString("testInterlocutor"));
-
-    QVERIFY(client->chatGroup()->isEnabled());
-    QVERIFY(client->sendButton()->isEnabled());
-    QVERIFY(client->messageInput()->isEnabled());
+    QVERIFY(client->getStatusLabel()->text().contains("Not connected"));
+    QVERIFY(client->getChatDisplay()->toPlainText().contains("Disconnected"));
 }
 
-void ClientTest::testProcessServerMessageAuthError() {
-    QJsonObject authError;
-    authError["type"] = "auth_error";
-    authError["message"] = "Authentication failed";
+void ClientTest::testAuthSuccess() {
+    client->setTestClientName("testUser");
+    client->setTestInterlocutorName("testFriend");
 
-    simulateServerMessage(client, authError);
+    client->simulateAuthSuccess("testUser", "testFriend", true);
+    QTest::qWait(100);
 
-    QVERIFY(!client->isAuthenticated());
+    QVERIFY(client->getStatusLabel()->text().contains("Connected"));
+    QVERIFY(client->getChatGroup()->isEnabled());
+    QVERIFY(client->getInterlocutorNameEdit()->text() == "testFriend");
+    QVERIFY(client->getChatGroup()->title().contains("testFriend"));
+
+    QString chatText = client->getChatDisplay()->toPlainText();
+    QVERIFY(chatText.contains("Successfully authenticated"));
+    QVERIFY(chatText.contains("testFriend is connected"));
+
+    QVERIFY(client->getMessageInput()->isEnabled());
+    QVERIFY(client->getSendButton()->isEnabled());
 }
 
-void ClientTest::testProcessServerMessageRegular() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorConnected(true);
+void ClientTest::testAuthError() {
+    client->simulateAuthError("Invalid credentials");
+    QTest::qWait(100);
 
-    QJsonObject message;
-    message["type"] = "message";
-    message["sender"] = "testSender";
-    message["text"] = "Hello, World!";
-    message["timestamp"] = "12:00:00";
-
-    simulateServerMessage(client, message);
-
-    QString chatText = client->chatDisplay()->toPlainText();
-    QVERIFY(chatText.contains("Hello, World!"));
-    QVERIFY(chatText.contains("testSender"));
+    QVERIFY(client->getStatusLabel()->text().contains("Not connected"));
 }
 
-void ClientTest::testProcessServerMessageInterlocutorConnected() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorName("newInterlocutor");
-    client->chatGroup()->setEnabled(true);
+void ClientTest::testMessageReceived() {
+    client->setTestClientName("testUser");
+    client->setTestInterlocutorName("testFriend");
 
-    QJsonObject connectedMsg;
-    connectedMsg["type"] = "interlocutor_connected";
-    connectedMsg["interlocutorName"] = "newInterlocutor";
+    client->simulateAuthSuccess("testUser", "testFriend", true);
+    QTest::qWait(100);
 
-    simulateServerMessage(client, connectedMsg);
+    client->simulateMessageReceived("testFriend", "Hello from friend!", "12:34:56");
+    QTest::qWait(100);
 
-    QVERIFY(client->interlocutorConnected());
-    QCOMPARE(client->interlocutorName(), QString("newInterlocutor"));
-    QVERIFY(client->sendButton()->isEnabled());
-    QVERIFY(client->messageInput()->isEnabled());
+    QString chatText = client->getChatDisplay()->toPlainText();
+    QVERIFY(chatText.contains("Hello from friend!"));
+    QVERIFY(chatText.contains("testFriend"));
+    QVERIFY(chatText.contains("12:34:56"));
 }
 
-void ClientTest::testProcessServerMessageInterlocutorDisconnected() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorConnected(true);
-    client->chatGroup()->setEnabled(true);
-    client->sendButton()->setEnabled(true);
-    client->messageInput()->setEnabled(true);
+void ClientTest::testInterlocutorConnected() {
+    client->setTestClientName("testUser");
+    client->setTestInterlocutorName("testFriend");
 
-    QJsonObject disconnectedMsg;
-    disconnectedMsg["type"] = "interlocutor_disconnected";
-    disconnectedMsg["message"] = "Interlocutor disconnected";
+    client->simulateAuthSuccess("testUser", "testFriend", false);
+    QTest::qWait(100);
 
-    simulateServerMessage(client, disconnectedMsg);
+    QVERIFY(!client->getMessageInput()->isEnabled());
+    QVERIFY(!client->getSendButton()->isEnabled());
 
-    QVERIFY(!client->interlocutorConnected());
-    QVERIFY(!client->sendButton()->isEnabled());
-    QVERIFY(!client->messageInput()->isEnabled());
+    client->simulateInterlocutorConnected("testFriend");
+    QTest::qWait(100);
+
+    QVERIFY(client->getMessageInput()->isEnabled());
+    QVERIFY(client->getSendButton()->isEnabled());
+
+    QString chatText = client->getChatDisplay()->toPlainText();
+    QVERIFY(chatText.contains("testFriend has connected"));
 }
 
-void ClientTest::testProcessServerMessageInterlocutorOffline() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorConnected(true);
-    client->chatGroup()->setEnabled(true);
+void ClientTest::testInterlocutorDisconnected() {
+    client->setTestClientName("testUser");
+    client->setTestInterlocutorName("testFriend");
 
-    QJsonObject offlineMsg;
-    offlineMsg["type"] = "interlocutor_offline";
-    offlineMsg["message"] = "Interlocutor is offline";
+    client->simulateAuthSuccess("testUser", "testFriend", true);
+    QTest::qWait(100);
 
-    simulateServerMessage(client, offlineMsg);
+    QVERIFY(client->getMessageInput()->isEnabled());
+    QVERIFY(client->getSendButton()->isEnabled());
 
-    QString chatText = client->chatDisplay()->toPlainText();
-    QVERIFY(chatText.contains("offline"));
+    client->simulateInterlocutorDisconnected();
+    QTest::qWait(100);
+
+    QVERIFY(!client->getMessageInput()->isEnabled());
+    QVERIFY(!client->getSendButton()->isEnabled());
+
+    QString chatText = client->getChatDisplay()->toPlainText();
+    QVERIFY(chatText.contains("testFriend disconnected"));
 }
 
-void ClientTest::testProcessServerMessageInterlocutorChanged() {
-    client->setIsAuthenticated(true);
-    client->chatGroup()->setEnabled(true);
-    client->setInterlocutorName("oldInterlocutor");
-
-    QJsonObject changeMsg;
-    changeMsg["type"] = "interlocutor_changed";
-    changeMsg["newInterlocutor"] = "newInterlocutor";
-    changeMsg["interlocutorConnected"] = true;
-
-    simulateServerMessage(client, changeMsg);
-
-    QCOMPARE(client->interlocutorName(), QString("newInterlocutor"));
-    QVERIFY(client->interlocutorConnected());
-    QVERIFY(client->sendButton()->isEnabled());
-    QVERIFY(client->messageInput()->isEnabled());
+void ClientTest::testInputValidation() {
+    try {
+        client->testValidateInput("user1", "user2");
+        QVERIFY(true);
+    } catch (const std::exception&) {
+        QVERIFY(false);
+    }
 }
 
-void ClientTest::testProcessServerMessageInterlocutorChangeError() {
-    client->setIsAuthenticated(true);
-    client->chatGroup()->setEnabled(true);
-
-    QJsonObject errorMsg;
-    errorMsg["type"] = "interlocutor_change_error";
-    errorMsg["message"] = "Change failed";
-
-    simulateServerMessage(client, errorMsg);
-
-    QString chatText = client->chatDisplay()->toPlainText();
-    QVERIFY(chatText.contains("Error"));
-    QVERIFY(chatText.contains("Change failed"));
+void ClientTest::testSelfInterlocutorValidation() {
+    try {
+        client->testValidateInput("sameUser", "sameUser");
+        QVERIFY(false);
+    } catch (const std::exception& e) {
+        QString error(e.what());
+        QVERIFY(error.contains("cannot be the same"));
+        QVERIFY(true);
+    }
 }
 
-void ClientTest::testProcessServerMessageInvalidJson() {
-    QByteArray invalidData = "Invalid JSON data";
+void ClientTest::testEmptyFieldsValidation() {
+    try {
+        client->testValidateInput("", "user2");
+        QVERIFY(false);
+    } catch (const std::exception& e) {
+        QString error(e.what());
+        QVERIFY(error.contains("Fill in all fields"));
+    }
 
-    client->processServerMessage(invalidData);
-
-    QVERIFY(true);
-}
-
-void ClientTest::testProcessServerMessageNotObject() {
-    QJsonArray array;
-    array.append("item1");
-    array.append("item2");
-
-    QByteArray data = QJsonDocument(array).toJson(QJsonDocument::Compact);
-
-    client->processServerMessage(data);
-
-    QVERIFY(true);
-}
-
-void ClientTest::testSendMessage() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorConnected(true);
-    client->setInterlocutorName("testInterlocutor");
-    client->chatGroup()->setEnabled(true);
-    client->sendButton()->setEnabled(true);
-    client->messageInput()->setEnabled(true);
-
-    client->messageInput()->setText("Test message");
-
-    QTcpSocket* socket = new QTcpSocket();
-    client->setSocket(socket);
-
-    client->sendMessage();
-
-    QString chatText = client->chatDisplay()->toPlainText();
-    QVERIFY(chatText.contains("Test message"));
-    QVERIFY(chatText.contains("You:"));
-
-    client->setSocket(nullptr);
-    delete socket;
-}
-
-void ClientTest::testSendMessageNotAuthenticated() {
-    client->setIsAuthenticated(false);
-    client->setInterlocutorConnected(false);
-    client->messageInput()->setText("Test message");
-
-    client->sendMessage();
-
-    QVERIFY(true);
-}
-
-void ClientTest::testSendMessageInterlocutorNotConnected() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorConnected(false);
-    client->chatGroup()->setEnabled(true);
-    client->messageInput()->setEnabled(false);
-    client->sendButton()->setEnabled(false);
-
-    QTcpSocket* socket = new QTcpSocket();
-    client->setSocket(socket);
-
-    client->messageInput()->setText("Test message");
-
-    client->sendMessage();
-
-    QString chatText = client->chatDisplay()->toPlainText();
-    QVERIFY(chatText.contains("Cannot send message"));
-    QVERIFY(chatText.contains("interlocutor is not connected"));
-
-    client->setSocket(nullptr);
-    delete socket;
-}
-
-void ClientTest::testSendMessageEmpty() {
-    client->setIsAuthenticated(true);
-    client->setInterlocutorConnected(true);
-    client->chatGroup()->setEnabled(true);
-    client->sendButton()->setEnabled(true);
-    client->messageInput()->setEnabled(true);
-
-    client->messageInput()->setText("");
-
-    QTcpSocket* socket = new QTcpSocket();
-    client->setSocket(socket);
-
-    client->sendMessage();
-
-    QVERIFY(true);
-
-    client->setSocket(nullptr);
-    delete socket;
-}
-
-void ClientTest::testSendAuthRequest() {
-    client->setClientName("testClient");
-    client->setInterlocutorName("testInterlocutor");
-
-    QTcpSocket* socket = new QTcpSocket();
-    client->setSocket(socket);
-
-    client->sendAuthRequest();
-
-    client->setSocket(nullptr);
-    delete socket;
-}
-
-void ClientTest::testChangeInterlocutor() {
-    client->setIsAuthenticated(true);
-    client->setClientName("client1");
-    client->chatGroup()->setEnabled(true);
-    client->changeInterlocutorEdit()->setEnabled(true);
-    client->changeInterlocutorButton()->setEnabled(true);
-
-    client->changeInterlocutorEdit()->setText("newInterlocutor");
-
-    QTcpSocket* socket = new QTcpSocket();
-    client->setSocket(socket);
-
-    client->changeInterlocutor();
-
-    client->setSocket(nullptr);
-    delete socket;
-}
-
-void ClientTest::testChangeInterlocutorValidation() {
-    client->setIsAuthenticated(true);
-    client->setClientName("client1");
-    client->chatGroup()->setEnabled(true);
-    client->changeInterlocutorEdit()->setEnabled(true);
-    client->changeInterlocutorButton()->setEnabled(true);
-
-    client->changeInterlocutorEdit()->setText("");
-    client->changeInterlocutor();
-
-    client->changeInterlocutorEdit()->setText("client1");
-    client->changeInterlocutor();
-
-    QVERIFY(true);
-}
-
-void ClientTest::testUpdateConnectionStatus() {
-    client->serverAddressEdit()->setText("localhost");
-    client->updateConnectionStatus(true);
-
-    QString statusText = client->statusLabel()->text();
-    QVERIFY(statusText.contains("localhost"));
-    QVERIFY(statusText.contains("Connected"));
-
-    client->updateConnectionStatus(false);
-    statusText = client->statusLabel()->text();
-    QVERIFY(statusText.contains("Not connected"));
-}
-
-void ClientTest::testSocketErrorHandling() {
-    QTcpSocket* socket = new QTcpSocket();
-    client->setSocket(socket);
-
-    client->setSocket(nullptr);
-    delete socket;
-
-    QVERIFY(true);
-}
-
-void ClientTest::testClientLifecycle() {
-    QVERIFY(!client->isAuthenticated());
-    QVERIFY(!client->interlocutorConnected());
-
-    QJsonObject authSuccess;
-    authSuccess["type"] = "auth_success";
-    authSuccess["message"] = "Authentication successful";
-    authSuccess["interlocutorName"] = "testInterlocutor";
-    authSuccess["interlocutorConnected"] = true;
-
-    client->setIsAuthenticated(true);
-    client->setInterlocutorName("testInterlocutor");
-
-    simulateServerMessage(client, authSuccess);
-
-    QVERIFY(client->isAuthenticated());
-    QVERIFY(client->interlocutorConnected());
-
-    QJsonObject message;
-    message["type"] = "message";
-    message["sender"] = "testInterlocutor";
-    message["text"] = "Hello!";
-    message["timestamp"] = "12:00:00";
-
-    simulateServerMessage(client, message);
-
-    QString chatText = client->chatDisplay()->toPlainText();
-    QVERIFY(chatText.contains("Hello!"));
-
-    QJsonObject disconnected;
-    disconnected["type"] = "interlocutor_disconnected";
-    disconnected["message"] = "Interlocutor disconnected";
-
-    simulateServerMessage(client, disconnected);
-
-    QVERIFY(!client->interlocutorConnected());
-    QVERIFY(!client->sendButton()->isEnabled());
-
-    QVERIFY(true);
+    try {
+        client->testValidateInput("user1", "");
+        QVERIFY(false);
+    } catch (const std::exception& e) {
+        QString error(e.what());
+        QVERIFY(error.contains("Fill in all fields"));
+    }
 }

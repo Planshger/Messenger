@@ -54,28 +54,34 @@ void Server::onReadyRead() {
     QDataStream in(clientSocket);
     in.setVersion(QDataStream::Qt_5_15);
 
-    while (true) {
-        if (buffer.expectedSize == 0) {
-            if (clientSocket->bytesAvailable() < static_cast<qint64>(sizeof(quint32))) {break;}
-            in >> buffer.expectedSize;
-            qDebug() << "Expecting message of size:" << buffer.expectedSize << "from socket";
+    if (buffer.expectedSize == 0) {
+        if (clientSocket->bytesAvailable() < static_cast<qint64>(sizeof(quint32))) {
+            return;
         }
+        in >> buffer.expectedSize;
+        qDebug() << "Expecting message of size:" << buffer.expectedSize << "from socket";
+    }
 
-        if (clientSocket->bytesAvailable() < buffer.expectedSize) {break;}
+    if (clientSocket->bytesAvailable() < buffer.expectedSize) {
+        return;
+    }
 
-        QByteArray data;
-        data.resize(buffer.expectedSize);
-        int bytesRead = in.readRawData(data.data(), buffer.expectedSize);
+    QByteArray data;
+    data.resize(buffer.expectedSize);
+    int bytesRead = in.readRawData(data.data(), buffer.expectedSize);
 
-        if (bytesRead != buffer.expectedSize) {
-            qDebug() << "Error: Read" << bytesRead << "bytes, expected" << buffer.expectedSize;
-            buffer.expectedSize = 0;
-            break;
-        }
-
-        qDebug() << "Server received full message, size:" << buffer.expectedSize;
-        processClientMessage(clientSocket, data);
+    if (bytesRead != buffer.expectedSize) {
+        qDebug() << "Error: Read" << bytesRead << "bytes, expected" << buffer.expectedSize;
         buffer.expectedSize = 0;
+        return;
+    }
+
+    qDebug() << "Server received full message, size:" << buffer.expectedSize;
+    processClientMessage(clientSocket, data);
+    buffer.expectedSize = 0;
+
+    if (clientSocket->bytesAvailable() > 0) {
+        onReadyRead();
     }
 }
 

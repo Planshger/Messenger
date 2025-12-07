@@ -1,11 +1,11 @@
 #include "client.hpp"
 #include <QApplication>
 
-int main(int argc, char** argv) {
-    QApplication s(argc, argv);
+int main(int argc, char **argv) {
+    QApplication app(argc, argv);
 
-    Client client;
-    client.show();
+    Client clientApp(nullptr);
+    clientApp.widget()->show();
 
-    return s.exec();
+    return app.exec();
 }
