@@ -4,30 +4,30 @@
 #include <QString>
 #include <QJsonObject>
 
-struct ClientInfo {
-    QTcpSocket* socket;
-    QString interlocutor;
-    bool isAuthenticated;
-};
-
-struct ClientBuffer {
-    QTcpSocket* socket;
-    quint32 expectedSize;
-};
-
 class Server : public QTcpServer {
     Q_OBJECT
-
-public:
-    explicit Server(QObject* parent = nullptr);
-    bool open(const QString& port);
 
 private slots:
     void onNewConnection();
     void onClientDisconnected();
     void onReadyRead();
 
-private:
+public:
+
+    struct ClientInfo {
+        QTcpSocket* socket;
+        QString interlocutor;
+        bool isAuthenticated;
+    };
+
+    struct ClientBuffer {
+        QTcpSocket* socket;
+        quint32 expectedSize;
+    };
+
+    explicit Server(QObject* parent = nullptr);
+    bool open(const QString& port);
+
     void processClientMessage(QTcpSocket* clientSocket, const QByteArray& data);
     void processAuth(QTcpSocket* clientSocket, const QJsonObject& obj);
     void processMessage(QTcpSocket* clientSocket, const QJsonObject& obj);

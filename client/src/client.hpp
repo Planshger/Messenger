@@ -1,20 +1,22 @@
 #include <QWidget>
 #include <QTcpSocket>
 #include <QJsonObject>
+#include <QLineEdit>
+#include <QTextEdit>
+#include <QPushButton>
+#include <QLabel>
+#include <QGroupBox>
 
-class QLineEdit;
-class QTextEdit;
-class QPushButton;
-class QLabel;
-class QGroupBox;
+class TestableClient;
 
 class Client : public QWidget {
+    friend class TestableClient;
     Q_OBJECT
 
 public:
     explicit Client(QWidget* parent = nullptr);
 
-private slots:
+public slots:
     void connectToServer();
     void disconnectFromServer();
     void onConnected();

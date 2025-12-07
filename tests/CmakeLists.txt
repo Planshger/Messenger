@@ -1,0 +1,18 @@
+project(tests LANGUAGES CXX)
+enable_testing(true)
+
+find_package(Qt6 REQUIRED COMPONENTS Test)
+add_executable(server_test server_test_src/main.cpp
+                           server_test_src/server_test.hpp
+                           server_test_src/server_test.cpp)
+
+add_test(NAME server_test COMMAND server_test)
+target_link_libraries(server_test PRIVATE Qt6::Test Qt6::Core Qt6::Network server_lib)
+
+
+add_executable(client_test client_test_src/main.cpp
+                           client_test_src/client_test.hpp
+                           client_test_src/client_test.cpp)
+
+add_test(NAME client_test COMMAND client_test)
+target_link_libraries(client_test PRIVATE Qt6::Test Qt6::Core Qt6::Widgets Qt6::Network client_lib)
